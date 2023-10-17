@@ -942,7 +942,7 @@ def list_all_dimension_attributes(
     name="List column level lineage of node",
 )
 def column_lineage(
-    name: str, *, session: Session = Depends(get_session)
+    name: str, *, session: Session = Depends(get_session),
 ) -> List[LineageColumn]:
     """
     List column-level lineage of a node in a graph

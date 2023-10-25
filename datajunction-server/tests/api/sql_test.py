@@ -651,9 +651,9 @@ def test_sql_with_filters_orderby_no_access(  # pylint: disable=R0913
     assert sorted(list(data["message"])) == sorted(
         list(
             "Authorization of User `dj` for this request failed."
-            "\nThe following requests were denied:\nread:djnode/foo.bar.dispatcher, "
-            "read:djnode/foo.bar.repair_orders, read:djnode/foo.bar.municipality_dim, "
-            "read:djnode/foo.bar.num_repair_orders, read:djnode/foo.bar.hard_hat.",
+            "\nThe following requests were denied:\nread:node/foo.bar.dispatcher, "
+            "read:node/foo.bar.repair_orders, read:node/foo.bar.municipality_dim, "
+            "read:node/foo.bar.num_repair_orders, read:node/foo.bar.hard_hat.",
         ),
     )
     assert data["errors"][0]["code"] == 500
@@ -851,9 +851,9 @@ def test_get_sql_for_metrics_no_access(client_with_roads: TestClient):
     assert sorted(list(data["message"])) == sorted(
         list(
             "Authorization of User `dj` for this request failed."
-            "\nThe following requests were denied:\nread:djnode/default.dispatcher, "
-            "read:djnode/default.repair_order_details, read:djnode/default.hard_hat, "
-            "read:djnode/default.municipality_dim.",
+            "\nThe following requests were denied:\nread:node/default.dispatcher, "
+            "read:node/default.repair_order_details, read:node/default.hard_hat, "
+            "read:node/default.municipality_dim.",
         ),
     )
     assert data["errors"][0]["code"] == 500
@@ -1282,12 +1282,13 @@ def test_get_sql_for_metrics_orderby_not_in_dimensions_no_access(
         def validate_access_override():
             def _validate_access(access_control: access.AccessControl):
                 for request in access_control.requests:
-                    if isinstance(
-                        request.access_object,
-                        access.DJNode,
-                    ) and request.access_object.name in (
-                        "foo.bar.avg_repair_price",
-                        "default.hard_hat.city",
+                    if (
+                        request.access_object.resource_type == access.ResourceType.NODE
+                        and request.access_object.name
+                        in (
+                            "foo.bar.avg_repair_price",
+                            "default.hard_hat.city",
+                        )
                     ):
                         request.deny()
                     else:
@@ -1390,7 +1391,15 @@ default_DOT_simple_agg AS (SELECT  default_DOT_simple_agg.order_day default_DOT_
     COUNT(ro.repair_order_id) AS repair_orders_cnt
  FROM (SELECT  default_DOT_repair_orders.repair_order_id,
     struct(default_DOT_repair_orders.required_date AS required_dt, default_DOT_repair_orders.order_date AS order_dt, default_DOT_repair_orders.dispatched_date AS dispatched_dt) relevant_dates
- FROM roads.repair_orders AS default_DOT_repair_orders
+ FROM roads.repair_orders AS default_DOT_repair_orders LEFT OUTER JOIN (SELECT  default_DOT_repair_orders.dispatched_date,
+    default_DOT_repair_orders.dispatcher_id,
+    default_DOT_repair_orders.hard_hat_id,
+    default_DOT_repair_orders.municipality_id,
+    default_DOT_repair_orders.order_date,
+    default_DOT_repair_orders.repair_order_id,
+    default_DOT_repair_orders.required_date
+ FROM roads.repair_orders AS default_DOT_repair_orders)
+ AS default_DOT_repair_order ON default_DOT_repair_orders.repair_order_id = default_DOT_repair_order.repair_order_id
 
 ) AS ro
  GROUP BY  EXTRACT(YEAR, ro.relevant_dates.order_dt), EXTRACT(MONTH, ro.relevant_dates.order_dt), EXTRACT(DAY, ro.relevant_dates.order_dt))

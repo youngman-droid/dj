@@ -52,8 +52,17 @@ export const DataJunctionAPI = {
   },
 
   nodes: async function (prefix) {
+    const queryParams = prefix ? `?prefix=${prefix}` : '';
     return await (
-      await fetch(`${DJ_URL}/nodes/?prefix=${prefix}`, {
+      await fetch(`${DJ_URL}/nodes/${queryParams}`, {
+        credentials: 'include',
+      })
+    ).json();
+  },
+
+  nodeDetails: async () => {
+    return await (
+      await fetch(`${DJ_URL}/nodes/details/`, {
         credentials: 'include',
       })
     ).json();
@@ -68,7 +77,16 @@ export const DataJunctionAPI = {
     mode,
     namespace,
     primary_key,
+    metric_direction,
+    metric_unit,
   ) {
+    const metricMetadata =
+      metric_direction || metric_unit
+        ? {
+            direction: metric_direction,
+            unit: metric_unit,
+          }
+        : null;
     const response = await fetch(`${DJ_URL}/nodes/${nodeType}`, {
       method: 'POST',
       headers: {
@@ -82,6 +100,7 @@ export const DataJunctionAPI = {
         mode: mode,
         namespace: namespace,
         primary_key: primary_key,
+        metric_metadata: metricMetadata,
       }),
       credentials: 'include',
     });
@@ -95,8 +114,17 @@ export const DataJunctionAPI = {
     query,
     mode,
     primary_key,
+    metric_direction,
+    metric_unit,
   ) {
     try {
+      const metricMetadata =
+        metric_direction || metric_unit
+          ? {
+              direction: metric_direction,
+              unit: metric_unit,
+            }
+          : null;
       const response = await fetch(`${DJ_URL}/nodes/${name}`, {
         method: 'PATCH',
         headers: {
@@ -108,6 +136,7 @@ export const DataJunctionAPI = {
           query: query,
           mode: mode,
           primary_key: primary_key,
+          metric_metadata: metricMetadata,
         }),
         credentials: 'include',
       });
@@ -661,5 +690,15 @@ export const DataJunctionAPI = {
       },
     );
     return { status: response.status, json: await response.json() };
+  },
+  listMetricMetadata: async function () {
+    const response = await fetch(`${DJ_URL}/metrics/metadata`, {
+      method: 'GET',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      credentials: 'include',
+    });
+    return await response.json();
   },
 };

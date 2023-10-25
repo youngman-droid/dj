@@ -133,6 +133,115 @@ def test_read_nodes(session: Session, client: TestClient) -> None:
     assert set(data) == {"a-metric"}
 
 
+def test_get_nodes_with_details(client_with_examples: TestClient):
+    """
+    Test getting all nodes with some details
+    """
+    response = client_with_examples.get("/nodes/details/")
+    assert response.ok
+    data = response.json()
+    assert {d["name"] for d in data} == {
+        "default.country_dim",
+        "foo.bar.us_state",
+        "basic.paint_colors_trino",
+        "foo.bar.us_region",
+        "default.avg_repair_order_discounts",
+        "foo.bar.hard_hats",
+        "foo.bar.dispatchers",
+        "foo.bar.us_states",
+        "default.sales",
+        "basic.patches",
+        "foo.bar.local_hard_hats",
+        "default.date_dim",
+        "foo.bar.hard_hat",
+        "default.long_events_distinct_countries",
+        "default.repair_type",
+        "default.total_repair_order_discounts",
+        "default.total_repair_cost",
+        "basic.source.comments",
+        "foo.bar.municipality_type",
+        "default.large_revenue_payments_and_business_only",
+        "default.payment_type_table",
+        "default.local_hard_hats",
+        "default.dispatcher",
+        "foo.bar.repair_orders",
+        "basic.transform.country_agg",
+        "foo.bar.hard_hat_state",
+        "foo.bar.municipality_dim",
+        "foo.bar.repair_order_details",
+        "foo.bar.dispatcher",
+        "default.dispatchers",
+        "dbt.source.stripe.payments",
+        "default.national_level_agg",
+        "default.us_region",
+        "default.repair_order_details",
+        "default.contractor",
+        "foo.bar.total_repair_order_discounts",
+        "default.repair_orders",
+        "basic.paint_colors_spark",
+        "default.long_events",
+        "default.items",
+        "default.special_country_dim",
+        "default.avg_user_age",
+        "foo.bar.contractor",
+        "basic.avg_luminosity_patches",
+        "default.countries",
+        "default.discounted_orders_rate",
+        "default.municipality_municipality_type",
+        "default.user_dim",
+        "basic.corrected_patches",
+        "basic.num_users",
+        "default.regional_level_agg",
+        "default.revenue",
+        "foo.bar.contractors",
+        "foo.bar.avg_repair_order_discounts",
+        "foo.bar.municipality",
+        "dbt.source.jaffle_shop.customers",
+        "foo.bar.repair_order",
+        "default.account_type",
+        "foo.bar.avg_time_to_dispatch",
+        "basic.dimension.users",
+        "dbt.dimension.customers",
+        "basic.num_comments",
+        "default.us_state",
+        "default.hard_hats",
+        "default.items_sold_count",
+        "default.users",
+        "default.avg_repair_price",
+        "basic.murals",
+        "default.avg_length_of_employment",
+        "default.municipality_type",
+        "default.hard_hat_state",
+        "default.num_repair_orders",
+        "basic.source.users",
+        "default.date",
+        "default.us_states",
+        "foo.bar.total_repair_cost",
+        "default.device_ids_count",
+        "dbt.source.jaffle_shop.orders",
+        "dbt.transform.customer_agg",
+        "default.regional_repair_efficiency",
+        "foo.bar.num_repair_orders",
+        "default.hard_hat",
+        "foo.bar.municipality_municipality_type",
+        "basic.dimension.countries",
+        "default.number_of_account_types",
+        "default.municipality",
+        "default.payment_type",
+        "default.municipality_dim",
+        "default.contractors",
+        "default.total_profit",
+        "default.account_type_table",
+        "default.repair_order",
+        "foo.bar.avg_length_of_employment",
+        "foo.bar.avg_repair_price",
+        "default.avg_time_to_dispatch",
+        "default.event_source",
+        "foo.bar.repair_type",
+        "default.large_revenue_payments_only",
+    }
+
+
 class TestNodeCRUD:  # pylint: disable=too-many-public-methods
     """
     Test node CRUD
@@ -1874,14 +1983,34 @@ class TestNodeCRUD:  # pylint: disable=too-many-public-methods
         """
         response = client_with_roads.patch(
             "/nodes/default.total_repair_cost/",
-            json={"query": "SELECT sum(price) FROM default.repair_order_details"},
+            json={
+                "query": "SELECT sum(price) FROM default.repair_order_details",
+                "metric_metadata": {
+                    "kind": "count",
+                    "direction": "higher_is_better",
+                    "unit": "dollar",
+                },
+            },
         )
         node_data = response.json()
         assert node_data["query"] == (
             "SELECT sum(price) FROM default.repair_order_details"
         )
+        response = client_with_roads.get("/metrics/default.total_repair_cost")
+        metric_data = response.json()
+        assert metric_data["metric_metadata"] == {
+            "direction": "higher_is_better",
+            "unit": {
+                "abbreviation": None,
+                "category": None,
+                "description": None,
+                "label": "Dollar",
+                "name": "DOLLAR",
+            },
+        }
+
         response = client_with_roads.get("/nodes/default.total_repair_cost")
-        assert response.json()["version"] == "v1.0"
+        assert response.json()["version"] == "v1.1"
 
         response = client_with_roads.patch(
             "/nodes/default.total_repair_cost/",
@@ -4733,3 +4862,121 @@ def test_set_column_partition(client_with_roads: TestClient):
         },
         "type": "string",
     }
+
+
+def test_delete_recreate_for_all_nodes(client_with_roads: TestClient):
+    """
+    Test deleting and recreating for all node types
+    """
+    # Delete a source node
+    client_with_roads.delete("/nodes/default.dispatchers")
+    # Recreating it should succeed
+    response = client_with_roads.post(
+        "/nodes/source",
+        json={
+            "columns": [
+                {"name": "dispatcher_id", "type": "int"},
+                {"name": "company_name", "type": "string"},
+                {"name": "phone", "type": "string"},
+            ],
+            "description": "Information on dispatchers",
+            "mode": "published",
+            "name": "default.dispatchers",
+            "catalog": "default",
+            "schema_": "roads",
+            "table": "dispatchers",
+        },
+    )
+    assert response.json()["version"] == "v2.0"
+    response = client_with_roads.get("/history?node=default.dispatchers")
+    assert [activity["activity_type"] for activity in response.json()] == [
+        "create",
+        "delete",
+        "update",
+        "restore",
+    ]
+
+    # Delete a dimension node
+    client_with_roads.delete("/nodes/default.us_state")
+    # Trying to create a transform node with the same name will fail
+    response = client_with_roads.post(
+        "/nodes/transform",
+        json={
+            "description": "US state transform",
+            "query": """SELECT
+  state_id,
+  state_name,
+  state_abbr AS state_short
+FROM default.us_states s
+LEFT JOIN default.us_region r
+ON s.state_region = r.us_region_id""",
+            "mode": "published",
+            "name": "default.us_state",
+            "primary_key": ["state_id"],
+        },
+    )
+    assert response.json()["message"] == (
+        "A node with name `default.us_state` of a `dimension` type existed "
+        "before. If you want to re-create it with a different type, you "
+        "need to remove all traces of the previous node with a hard delete call: "
+        "DELETE /nodes/{node_name}/hard"
+    )
+    # Trying to create a dimension node with the same name but an updated query will succeed
+    response = client_with_roads.post(
+        "/nodes/dimension",
+        json={
+            "description": "US state",
+            "query": """SELECT
+  state_id,
+  state_name,
+  state_abbr AS state_short
+FROM default.us_states s
+LEFT JOIN default.us_region r
+ON s.state_region = r.us_region_id""",
+            "mode": "published",
+            "name": "default.us_state",
+            "primary_key": ["state_id"],
+        },
+    )
+    node_data = response.json()
+    assert node_data["version"] == "v2.0"
+    response = client_with_roads.get("/history?node=default.us_state")
+    assert [activity["activity_type"] for activity in response.json()] == [
+        "create",
+        "set_attribute",
+        "delete",
+        "update",
+        "restore",
+    ]
+
+    create_cube_payload = {
+        "metrics": [
+            "default.num_repair_orders",
+            "default.avg_repair_price",
+            "default.total_repair_cost",
+        ],
+        "dimensions": [
+            "default.hard_hat.country",
+            "default.dispatcher.company_name",
+            "default.municipality_dim.local_region",
+        ],
+        "filters": ["default.hard_hat.state='AZ'"],
+        "description": "Cube of various metrics related to repairs",
+        "mode": "published",
+        "name": "default.repairs_cube",
+    }
+    client_with_roads.post(
+        "/nodes/cube/",
+        json=create_cube_payload,
+    )
+    client_with_roads.delete("/nodes/default.repairs_cube")
+    client_with_roads.post(
+        "/nodes/cube/",
+        json=create_cube_payload,
+    )
+    response = client_with_roads.get("/history?node=default.repairs_cube")
+    assert [activity["activity_type"] for activity in response.json()] == [
+        "create",
+        "delete",
+        "restore",
+    ]

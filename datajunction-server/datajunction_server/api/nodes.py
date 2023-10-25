@@ -7,7 +7,7 @@ import os
 from http import HTTPStatus
 from typing import List, Optional, Union, cast
 
-from fastapi import Depends, Query, Response
+from fastapi import BackgroundTasks, Depends, Query, Response
 from fastapi.responses import JSONResponse
 from sqlalchemy.sql.operators import is_
 from sqlmodel import Session, select
@@ -29,19 +29,20 @@ from datajunction_server.api.helpers import (
 )
 from datajunction_server.api.namespaces import create_node_namespace
 from datajunction_server.api.tags import get_tags_by_name
+from datajunction_server.constants import NODE_LIST_MAX
 from datajunction_server.errors import DJException, DJInvalidInputException
 from datajunction_server.internal.access.authentication.http import SecureAPIRouter
 from datajunction_server.internal.access.authorization import (
     validate_access,
-    validate_access_nodes,
+    validate_access_requests,
 )
-from datajunction_server.internal.materializations import schedule_materialization_jobs
 from datajunction_server.internal.nodes import (
     _create_node_from_inactive,
     create_cube_node_revision,
     create_node_revision,
     get_column_level_lineage,
     get_node_column,
+    save_column_level_lineage,
     save_node,
     set_node_column_attributes,
     update_any_node,
@@ -64,6 +65,7 @@ from datajunction_server.models.node import (
     DimensionAttributeOutput,
     LineageColumn,
     Node,
+    NodeIndexItem,
     NodeMode,
     NodeOutput,
     NodeRevision,
@@ -196,14 +198,77 @@ def list_nodes(
         statement = statement.where(Node.type == node_type)
     nodes = session.exec(statement).unique().all()
     return [
-        node.name
-        for node in validate_access_nodes(
+        approval.access_object.name
+        for approval in validate_access_requests(
             validate_access,
-            access.ResourceRequestVerb.BROWSE,
             current_user,
-            nodes,
+            [
+                access.ResourceRequest(
+                    verb=access.ResourceRequestVerb.BROWSE,
+                    access_object=access.Resource.from_node(node),
+                )
+                for node in nodes
+            ],
         )
     ]
+
+
+@router.get("/nodes/details/", response_model=List[NodeIndexItem])
+def list_all_nodes_with_details(
+    node_type: Optional[NodeType] = None,
+    *,
+    session: Session = Depends(get_session),
+    current_user: Optional[User] = Depends(get_current_user),
+    validate_access: access.ValidateAccessFn = Depends(  # pylint: disable=W0621
+        validate_access,
+    ),
+) -> List[NodeIndexItem]:
+    """
+    List the available nodes.
+    """
+    nodes_query = (
+        select(
+            NodeRevision.name,
+            NodeRevision.display_name,
+            NodeRevision.description,
+            NodeRevision.type,
+        )
+        .where(
+            Node.current_version == NodeRevision.version,
+            Node.name == NodeRevision.name,
+            Node.type == node_type if node_type else True,
+            is_(Node.deactivated_at, None),
+        )
+        .limit(NODE_LIST_MAX)
+    )  # Very high limit as a safeguard
+    results = [
+        NodeIndexItem(name=row[0], display_name=row[1], description=row[2], type=row[3])
+        for row in session.exec(nodes_query).all()
+    ]
+    if len(results) == NODE_LIST_MAX:  # pragma: no cover
+        _logger.warning(
+            "%s limit reached when returning all nodes, all nodes may not be captured in results",
+            NODE_LIST_MAX,
+        )
+    approvals = [
+        approval.access_object.name
+        for approval in validate_access_requests(
+            validate_access,
+            current_user,
+            [
+                access.ResourceRequest(
+                    verb=access.ResourceRequestVerb.BROWSE,
+                    access_object=access.Resource(
+                        name=row.name,
+                        resource_type=access.ResourceType.NODE,
+                        owner="",
+                    ),
+                )
+                for row in results
+            ],
+        )
+    ]
+    return [row for row in results if row.name in approvals]
 
 
 @router.get("/nodes/{name}/", response_model=NodeOutput)
@@ -381,6 +446,7 @@ def create_node(
     session: Session = Depends(get_session),
     current_user: Optional[User] = Depends(get_current_user),
     query_service_client: QueryServiceClient = Depends(get_query_service_client),
+    background_tasks: BackgroundTasks,
 ) -> NodeOutput:
     """
     Create a node.
@@ -399,6 +465,7 @@ def create_node(
         session=session,
         current_user=current_user,
         query_service_client=query_service_client,
+        background_tasks=background_tasks,
     ):
         return recreated_node  # pragma: no cover
 
@@ -417,6 +484,11 @@ def create_node(
     )
     node_revision = create_node_revision(data, node_type, session)
     save_node(session, node_revision, node, data.mode, current_user=current_user)
+    background_tasks.add_task(
+        save_column_level_lineage,
+        session=session,
+        node_revision=node_revision,
+    )
     session.refresh(node_revision)
     session.refresh(node)
 
@@ -455,6 +527,7 @@ def create_cube(
     session: Session = Depends(get_session),
     query_service_client: QueryServiceClient = Depends(get_query_service_client),
     current_user: Optional[User] = Depends(get_current_user),
+    background_tasks: BackgroundTasks,
 ) -> NodeOutput:
     """
     Create a cube node.
@@ -468,6 +541,7 @@ def create_cube(
         session=session,
         current_user=current_user,
         query_service_client=query_service_client,
+        background_tasks=background_tasks,
     ):
         return recreated_node  # pragma: no cover
 
@@ -486,12 +560,6 @@ def create_cube(
     )
     node_revision = create_cube_node_revision(session=session, data=data)
     save_node(session, node_revision, node, data.mode, current_user=current_user)
-
-    # Schedule materialization jobs, if any
-    schedule_materialization_jobs(
-        node_revision.materializations,
-        query_service_client,
-    )
     return node  # type: ignore
 
 
@@ -840,6 +908,7 @@ def update_node(
     session: Session = Depends(get_session),
     query_service_client: QueryServiceClient = Depends(get_query_service_client),
     current_user: Optional[User] = Depends(get_current_user),
+    background_tasks: BackgroundTasks,
 ) -> NodeOutput:
     """
     Update a node.
@@ -850,6 +919,7 @@ def update_node(
         session=session,
         query_service_client=query_service_client,
         current_user=current_user,
+        background_tasks=background_tasks,
     )
     return node  # type: ignore
 
